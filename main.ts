@@ -13,6 +13,9 @@ let UseFleetmanager = false
 let Full_auto = false
 let ID = 4
 let DEBUG = false
+//  Read analog input pins
+//  pins.analog_read_pin(AnalogPin.P0)
+//  pins.analog_read_pin(AnalogPin.P1)
 let UseHusky = true
 let DisplayDelay = 200
 function showText(txt: string) {
@@ -209,6 +212,7 @@ class Robot {
     target: number
     targettype: number
     objecttype: number
+    obstacle: number
     state: number
     gripper: number
     speed: number
@@ -228,7 +232,7 @@ class Robot {
     obstacle_detected: boolean
     cmd: number
     reply: number
-    constructor(loc: number = 1, dst: number = 1, _id: number = 1) {
+    constructor(loc: number = 1, dst: number = 1, _id: number = 1, _obstacle: number = 15) {
         //  who are we
         this.id = _id
         //  ego location and destination nr
@@ -237,6 +241,7 @@ class Robot {
         this.target = dst
         this.targettype = LOCATION_t
         this.objecttype = null
+        this.obstacle = _obstacle
         //  states
         this.state = IDLE
         this.gripper = CLOSED
@@ -743,9 +748,18 @@ function do_robot(_robot: Robot = new Robot()) {
                 _robot.state = FINDOBJECT
                 //  assign an object to look for
                 if (RandomDestination) {
-                    _robot.objecttype = randint(1, numobjects)
+                    // _robot.objecttype = randint(1, numobjects) # a random object is assigned to robot
+                    //  better would be to grab an object and see what we picked
+                    yield_(20)
+                    //  yield an wait for an object to appear in view
+                    showText("Detecting object: ")
+                    while (_robot.objecttype === null) {
+                        _robot.objecttype = find_random_object()
+                        yield_(20)
+                    }
+                    //  yield an wait for an object to appear in view
+                    showText("Object found: ")
                 } else {
-                    //  a random object is assigned to robot
                     _robot.objecttype = _robot.id
                 }
                 
@@ -1396,21 +1410,20 @@ let WaitingForReply = false
 //  function for getting data from huskylens and function for frame buffer
 // ---------------------------------------------------------------------------------------------------------
 function get_frame_data(inview: number): number[] {
-    let tag: number;
     let x: number;
     let y: number;
     let w: number;
     let h: number;
     
-    for (tag = 0; tag < inview; tag++) {
+    for (let tag = 0; tag < inview; tag++) {
         tagsInView.push(huskylens.readBox_ss(tag + 1, Content3.ID))
     }
     if (huskylens.isAppear(robot.target, HUSKYLENSResultType_t.HUSKYLENSResultBlock)) {
         // volgensmij zit er een bug in robot.target waarbij die soms de verkeerde qr code uitleest als er meerdere  in beeld zijn
         // de waarde robot.target is een nummer van target die die zoekt
         // bij de functie husylens.reade_box() moet de volgorde van tag ingevoerd worden die hij ziet(volgensmij)
-        serial.writeLine("target " + ("" + robot.target))
-        serial.writeLine("" + tag + " inview")
+        // serial.write_line("target "+str(robot.target))
+        // serial.write_line(str(tag)+' inview')
         x = huskylens.readeBox(robot.target, Content1.xCenter)
         y = huskylens.readeBox(robot.target, Content1.yCenter)
         w = huskylens.readeBox(robot.target, Content1.width)
@@ -1443,17 +1456,40 @@ function data_buffer(x: number, y: number, w: number, h: number, tagsInView: num
     return [buffer_xywh, buffer_tagsInView]
 }
 
+function find_random_object(): number {
+    
+    // return 10
+    if (tagsInView.length > 0) {
+        // for tg in range(len(tagsInView)):
+        //     serial.write_line('tag_id: ' + str(tagsInView[tg]))
+        for (let obj_tag = 1; obj_tag < obj.length; obj_tag++) {
+            if (tagsInView.indexOf(obj[obj_tag]) >= 0) {
+                return obj_tag
+            }
+            
+        }
+    }
+    
+    return null
+}
+
 // ---------------------------------------------------------------------------------------------------------
 //  actual main loop
 // ---------------------------------------------------------------------------------------------------------
 stopping = false
 radio.setGroup(1)
 close_gripper()
+let obstacle = false
+let obstacle_count = 0
 basic.forever(function on_forever() {
     
     if (Full_auto) {
         robot.active = true
         stopping = false
+        if (obstacle) {
+            stopping = true
+        }
+        
     }
     
     if (!stopping && robot.active) {
@@ -1500,8 +1536,25 @@ control.inBackground(function on_in_background() {
         huskylens.request()
         inview = huskylens.getBox(HUSKYLENSResultType_t.HUSKYLENSResultBlock)
         tagsInView = [0]
+        //  check if any of the objects is another robot (collision detection)
+        if (obstacle) {
+            //  we have seen an obstacle, keep a count how many frames we have seen this obstacle last before it disappered
+            obstacle_count += 1
+        }
+        
+        if (obstacle_count >= 5) {
+            //  if we have seen it more than 5 frames ago, we assume the object has disappeared
+            obstacle = false
+        }
+        
+        if (huskylens.isAppear(robot.obstacle, HUSKYLENSResultType_t.HUSKYLENSResultBlock)) {
+            obstacle = true
+            //  as long as we have confirmed visual identification, reset the frame count since last we have seen the obstacle
+            obstacle_count = 0
+        }
+        
         //  if there is a tag in view, refresh buffer.
-        if (huskylens.isAppear(robot.target, HUSKYLENSResultType_t.HUSKYLENSResultBlock)) {
+        if (inview > 0) {
             let ___tempvar15 = get_frame_data(inview)
             x = ___tempvar15[0]
             y = ___tempvar15[1]

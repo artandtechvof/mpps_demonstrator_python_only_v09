@@ -10,6 +10,10 @@ ID = 4
 
 DEBUG = False
 
+# Read analog input pins
+# pins.analog_read_pin(AnalogPin.P0)
+# pins.analog_read_pin(AnalogPin.P1)
+
 UseHusky = True
 DisplayDelay = 200
 
@@ -179,7 +183,7 @@ def get_time():
 # Robot() class, should be same for offline Simulation and actual physical demo robot
 #---------------------------------------------------------------------------------------------------------
 class Robot:
-    def __init__(self, loc=1, dst=1, _id=1):
+    def __init__(self, loc=1, dst=1, _id=1, _obstacle=15):
         # who are we
         self.id = _id
         # ego location and destination nr
@@ -188,6 +192,7 @@ class Robot:
         self.target = dst
         self.targettype = LOCATION_t
         self.objecttype = None
+        self.obstacle = _obstacle
         # states
         self.state = IDLE
         self.gripper = CLOSED
@@ -595,7 +600,14 @@ def do_robot(_robot=Robot()):
                 _robot.state = FINDOBJECT
                 # assign an object to look for
                 if RandomDestination:
-                    _robot.objecttype = randint(1, numobjects) # a random object is assigned to robot
+                    #_robot.objecttype = randint(1, numobjects) # a random object is assigned to robot
+                    # better would be to grab an object and see what we picked
+                    yield_(20) # yield an wait for an object to appear in view
+                    showText("Detecting object: ")
+                    while _robot.objecttype is None:
+                        _robot.objecttype = find_random_object()
+                        yield_(20) # yield an wait for an object to appear in view
+                    showText("Object found: ")
                 else:
                     _robot.objecttype = _robot.id  # robot ID determines object types to be retrieved
                 # switch state and start looking for object
@@ -1109,15 +1121,15 @@ WaitingForReply = False
 # function for getting data from huskylens and function for frame buffer
 #---------------------------------------------------------------------------------------------------------
 def get_frame_data(inview):
-    global tagsInView
+    global tagsInView, obstacle
     for tag in range(inview):
         tagsInView.append(huskylens.readBox_ss(tag + 1, Content3.ID))
     if huskylens.is_appear(robot.target, HUSKYLENSResultType_t.HUSKYLENS_RESULT_BLOCK):
     #volgensmij zit er een bug in robot.target waarbij die soms de verkeerde qr code uitleest als er meerdere  in beeld zijn
     #de waarde robot.target is een nummer van target die die zoekt
     #bij de functie husylens.reade_box() moet de volgorde van tag ingevoerd worden die hij ziet(volgensmij)
-        serial.write_line("target "+str(robot.target))
-        serial.write_line(str(tag)+' inview')
+        #serial.write_line("target "+str(robot.target))
+        #serial.write_line(str(tag)+' inview')
         x = huskylens.reade_box(robot.target, Content1.X_CENTER)
         y = huskylens.reade_box(robot.target, Content1.Y_CENTER)
         w = huskylens.reade_box(robot.target, Content1.WIDTH)
@@ -1144,20 +1156,35 @@ def data_buffer(x,y,w,h,tagsInView,reset):
         # return buffer data
         return buffer_xywh,buffer_tagsInView
 
+def find_random_object():
+    global tagsInView, obj
+    #return 10
+    if len(tagsInView) > 0:
+        #for tg in range(len(tagsInView)):
+        #    serial.write_line('tag_id: ' + str(tagsInView[tg]))
+        for obj_tag in range(1, len(obj)):
+            if obj[obj_tag] in tagsInView:
+                return obj_tag
+    return None    
+
 #---------------------------------------------------------------------------------------------------------
 # actual main loop
 #---------------------------------------------------------------------------------------------------------
 stopping = False
 radio.set_group(1)
 close_gripper()
+obstacle = False
+obstacle_count = 0
 
 
 def on_forever():
 
-    global stopping, HIL_Simulation, robot, newdata, Full_auto
+    global stopping, HIL_Simulation, robot, newdata, Full_auto, obstacle
     if Full_auto:
         robot.active = True
         stopping = False
+        if obstacle:
+            stopping = True
     if not stopping and robot.active:
         if (robot.cmd == POSITION_UPDATE):
             robot.cmd = STATUS_UPDATE
@@ -1184,7 +1211,7 @@ def on_forever():
 basic.forever(on_forever)
 
 def on_in_background():
-    global inview, tagsInView, x, y, w, h, newdata
+    global inview, tagsInView, x, y, w, h, newdata, obstacle, obstacle_count
     # approx 56 ms -> ~ 18 fps
 
     while 1:
@@ -1192,9 +1219,21 @@ def on_in_background():
         huskylens.request()
         inview = huskylens.get_box(HUSKYLENSResultType_t.HUSKYLENS_RESULT_BLOCK)
         tagsInView = [0]
+
+        # check if any of the objects is another robot (collision detection)
+        if obstacle:
+            # we have seen an obstacle, keep a count how many frames we have seen this obstacle last before it disappered
+            obstacle_count += 1
+        if obstacle_count >=5:
+            # if we have seen it more than 5 frames ago, we assume the object has disappeared
+            obstacle = False
+        if huskylens.is_appear(robot.obstacle, HUSKYLENSResultType_t.HUSKYLENS_RESULT_BLOCK):
+            obstacle = True
+            # as long as we have confirmed visual identification, reset the frame count since last we have seen the obstacle
+            obstacle_count = 0
         
         # if there is a tag in view, refresh buffer.
-        if huskylens.is_appear(robot.target, HUSKYLENSResultType_t.HUSKYLENS_RESULT_BLOCK):
+        if inview > 0:
             x,y,w,h = get_frame_data(inview)
             data_buffer(x,y,w,h,tagsInView,True)
 
